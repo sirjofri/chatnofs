@@ -8,7 +8,7 @@
 void
 usage(void)
 {
-	fprint(2, "usage: %s [ -b chatdir ] chatfile\n", argv0);
+	fprint(2, "usage: %s [ -b chatdir ] [ -s initial channel ] [ -c channel file ]\n", argv0);
 	exits("usage");
 }
 
@@ -17,12 +17,13 @@ usage(void)
 char *chatfile = "lobby";
 char *basedir  = "/mnt/chat/";
 char *motd = nil;
+char *chanfile = nil;
 
 int   fd = 0; /* for writing */
 char *user;
 
-int     rprocid;
-int     readfd;
+int rprocid;
+int readfd;
 
 void
 readproc(void*)
@@ -36,7 +37,7 @@ readproc(void*)
 		return;
 	}
 	seek(readfd, -200, 2);
-	while (1){
+	while (readfd > 0){
 		/* blocking instead of looping would be nicer */
 		/* channel would be even nicer */
 		n = read(readfd, readbuf, 4096);
@@ -63,24 +64,32 @@ enum {
 };
 
 void
-pmotd(void)
+printfile(char *f)
 {
 	int fd, n;
 	char buf[1024];
-	
-	fd = open(motd, OREAD);
+
+	if (!f) return;
+
+	fd = open(f, OREAD);
+	if (fd < 0) {
+		syslog(0, LOG, "error opening file %s: %r\n", f);
+		print("error: %r\n");
+		return;
+	}
 	while ((n = read(fd, buf, 1024)) > 0)
 		write(1, buf, n);
-	
+
 	close(fd);
 }
 
 void
 leave(void)
 {
-		seek(fd, 0, 2);
-		fprint(fd, "%s left the channel\n", user);
+	seek(fd, 0, 2);
+	fprint(fd, "%s left the channel\n", user);
 }
+
 int
 joinchat(char *chat)
 {
@@ -97,10 +106,17 @@ joinchat(char *chat)
 	snprint(s, n, "%s%s", basedir, chat);
 	chatfile = s;
 	
-	threadkill(rprocid);
 	if (readfd)
 		close(readfd);
-	rprocid = proccreate(readproc, nil, 2048);
+	readfd = open(chatfile, OREAD);
+	if (readfd < 0) {
+		syslog(0, LOG, "error opening %s: %r\n", chatfile);
+		return 1;
+	}
+	if (rprocid)
+		threadint(rprocid);
+	if (!rprocid)
+		rprocid = proccreate(readproc, nil, 2048);
 	print("joined channel %s\n", chat);
 	
 	leave();
@@ -143,7 +159,10 @@ interpret(char *buf)
 		leave();
 		threadexitsall(nil);
 	case 'm':
-		pmotd();
+		printfile(motd);
+		break;
+	case 'c':
+		printfile(chanfile);
 		break;
 	default:
 		werrstr("bad command");
@@ -192,8 +211,11 @@ threadmain(int argc, char **argv)
 	case 'b':
 		basedir = EARGF(usage());
 		break;
-	case 'c':
+	case 's':
 		chatfile = EARGF(usage());
+		break;
+	case 'c':
+		chanfile = EARGF(usage());
 		break;
 	case 'm':
 		motd = EARGF(usage());
@@ -205,7 +227,7 @@ threadmain(int argc, char **argv)
 		user = "nope";
 	
 	if (motd)
-		pmotd();
+		printfile(motd);
 	
 	if (initchatdir()){
 		print("error: %r\n");
@@ -219,8 +241,6 @@ threadmain(int argc, char **argv)
 		print("error: %r\n");
 		return;
 	}
-	
-//	rprocid = proccreate(readproc, nil, 2048);
 	
 	while ((buf = Brdline(b, '\n')) != 0){
 		n = Blinelen(b);
